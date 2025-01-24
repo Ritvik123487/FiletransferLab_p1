@@ -8,7 +8,6 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
-#include <åsys/types.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -75,11 +74,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    // Extract filename (everything after "ftp ")
-    char *filename = userInput + 4;
-    printf("%s", userInput);
-
-    if (access(userInput, F_OK) != 0) {
+    if (access(userInput, F_OK) == 0) {
         perror("File check (access)");
         exit(1);
     }

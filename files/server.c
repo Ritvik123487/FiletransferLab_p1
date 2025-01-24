@@ -91,7 +91,7 @@ int main(int argc, char *argv[])
 
 
     //check if ftp exists
-    if (strncmp(buf, "ftp ", 4) != 0) {
+    if (buf=="ftp") {
         fprintf(stderr, "Invalid format. Usage: ftp <filename>\n");
         return 1;
     }
