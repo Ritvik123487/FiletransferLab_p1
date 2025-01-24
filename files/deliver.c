@@ -8,19 +8,31 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
-#include <sys/types.h>
+#include <åsys/types.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#define PORT "3490" // the port the listener is expecting to receive on
+#define PORT "4090" // the port the listener is expecting to receive on
 
 int main(int argc, char *argv[])
 {
     int sockfd;
     struct addrinfo hints, *servinfo, *p;
     int rv;
+    #define MAXBUFLEN 100    // or however large you want the buffer
+
+    // This structure holds the address of whoever we receive from
+    struct sockaddr_storage their_addr;
+
+    // This holds the length of that address
+    socklen_t addr_len;
+
+    // This buffer holds incoming data
+    char buf[MAXBUFLEN];
+
+    // For example, if you need to track bytes read
     int numbytes;
 
     if (argc != 3) {
@@ -54,16 +66,9 @@ int main(int argc, char *argv[])
     }
 
     // Send the message to the listener
-    """
-    if ((numbytes = sendto(sockfd, argv[2], strlen(argv[2]), 0,
-             p->ai_addr, p->ai_addrlen)) == -1) {
-        perror("talker: sendto");
-        exit(1);
-    }
-    """
     // 2) GET USER INPUT
     // ----------------------
-    char userInput[256];
+    char userInput [512] = {'\0'};
     printf("Enter command as ftp <filename>: ");
     if (!fgets(userInput, sizeof(userInput), stdin)) {
         perror("fgets");
@@ -72,19 +77,15 @@ int main(int argc, char *argv[])
 
     // Extract filename (everything after "ftp ")
     char *filename = userInput + 4;
+    printf("%s", userInput);
 
-    // Check if file exists by trying to open it
-    FILE *fp = fopen(filename, "r");
-    if (fp == NULL) {
+    if (access(userInput, F_OK) != 0) {
+        perror("File check (access)");
         exit(1);
-    } 
-    else {
-        // We can successfully open the file
-        fclose(fp);
     }
 
     //Send message to server.c
-    const char *msgToServer = userInput; 
+    const char *msgToServer = "ftp"; 
     if ((numbytes = sendto(sockfd, msgToServer, strlen(msgToServer), 0,
                            p->ai_addr, p->ai_addrlen)) == -1) {
         perror("talker: sendto");
