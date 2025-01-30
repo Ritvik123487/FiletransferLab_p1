@@ -74,7 +74,12 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    if (access(userInput, F_OK) == 0) {
+    size_t len = strlen(userInput);
+    if (len > 0 && userInput[len - 1] == '\n') {
+        userInput[len - 1] = '\0';
+    }
+
+    if (access(userInput, F_OK) != 0) {
         perror("File check (access)");
         exit(1);
     }
