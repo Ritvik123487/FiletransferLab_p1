@@ -79,6 +79,13 @@ int main(int argc, char *argv[])
         userInput[len - 1] = '\0';
     }
 
+    if (strncmp(userInput, "ftp", 3) != 0) {
+        perror("Failed to receive command ftp");
+        exit(1);
+    }
+
+    memmove(userInput, userInput + 4, strlen(userInput) - 3);
+
     if (access(userInput, F_OK) != 0) {
         perror("File check (access)");
         exit(1);
