@@ -1,7 +1,3 @@
-/*
-** deliver.c -- UDP client for file transfer (using a stop-and-wait protocol)
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
