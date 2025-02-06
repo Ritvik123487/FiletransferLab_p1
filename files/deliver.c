@@ -24,7 +24,7 @@ struct packet {
     unsigned int size;
     char* filename;
     char filedata[1000];
-}
+};
 
 int main(int argc, char *argv[])
 {
@@ -102,6 +102,10 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    char filename[256];
+    strncpy(filename, userInput, sizeof(filename) - 1);
+    filename[sizeof(filename) - 1] = '\0';    
+
     // Open the file and compute total num of fragments 
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
@@ -114,7 +118,7 @@ int main(int argc, char *argv[])
     unsigned int total_frag = file_size / DATA_SIZE;
     if (file_size % DATA_SIZE != 0) total_frag++; 
 
-    // Construct packet
+    // Coqqqqqqqqqqqqqq
     for (unsigned int frag_no = 1; frag_no <= total_frag; frag_no++) {
          unsigned int data_size = DATA_SIZE;
          if (frag_no == total_frag && (file_size % DATA_SIZE) != 0) {
