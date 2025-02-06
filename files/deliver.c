@@ -15,6 +15,14 @@
 
 #define PORT "4090" // the port the listener is expecting to receive on
 
+struct packet {
+    unsigned int total_frag;
+    unsigned int frag_no;
+    unsigned int size;
+    char* filename;
+    char filedata[1000];
+}
+
 int main(int argc, char *argv[])
 {
     int sockfd;
