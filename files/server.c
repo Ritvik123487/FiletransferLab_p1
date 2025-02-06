@@ -63,10 +63,7 @@ int main(int argc, char *argv[]) {
     char buf[MAXBUFLEN];
     int numbytes;
 
-    /* === Initial Handshake ===
-     * The client first sends a handshake message "ftp". Upon receiving it,
-     * we send back "yes" so the client knows that the file transfer can begin.
-     */
+    // Initial Handshake: The client first sends a handshake message "ftp" and server sends back "yes"
     numbytes = recvfrom(sockfd, buf, MAXBUFLEN - 1, 0,
                         (struct sockaddr *)&client_addr, &addr_len);
     if (numbytes == -1) {
@@ -95,7 +92,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    /* === File Transfer === */
+    // File transfer
     FILE *fp = NULL;          // File pointer for writing received file data
     int done = 0;
     while (!done) {
@@ -105,11 +102,7 @@ int main(int argc, char *argv[]) {
             perror("server: recvfrom");
             exit(1);
         }
-        /* 
-         * Do not assume the received data is a null-terminated string;
-         * the packet contains binary file data.
-         * We need to extract the header by locating the first four colon characters.
-         */
+        // Extract header using four colon format
         int colon_count = 0, i;
         for (i = 0; i < numbytes; i++) {
             if (buf[i] == ':') {
@@ -120,11 +113,11 @@ int main(int argc, char *argv[]) {
         }
         if (colon_count < 4) {
             fprintf(stderr, "server: incomplete header received\n");
-            continue;  // Skip this packet.
+            continue;  
         }
         int header_len = i + 1;  // Include the fourth colon
 
-        // Copy header to a temporary null-terminated string.
+        // Copy header to a temporary null-terminated string
         char header_str[HEADER_SIZE];
         if (header_len >= HEADER_SIZE) {
             fprintf(stderr, "server: header too long\n");
@@ -133,7 +126,7 @@ int main(int argc, char *argv[]) {
         memcpy(header_str, buf, header_len);
         header_str[header_len] = '\0';
 
-        // Parse the header.
+        // Parse the header
         unsigned int total_frag, frag_no, data_size;
         char filename[256];
         int fields = sscanf(header_str, "%u:%u:%u:%255[^:]:", 
@@ -145,7 +138,7 @@ int main(int argc, char *argv[]) {
         printf("server: received fragment %u of %u, data size: %u, file: %s\n",
                frag_no, total_frag, data_size, filename);
 
-        // If this is the first fragment, open the file for writing.
+        // If this is the first fragment, open the file for writing
         if (frag_no == 1) {
             fp = fopen(filename, "wb");
             if (fp == NULL) {
@@ -155,8 +148,7 @@ int main(int argc, char *argv[]) {
             printf("server: created file \"%s\" for writing\n", filename);
         }
 
-        // Write file data to the file.
-        // The file data starts immediately after the header.
+        // The file data starts immediately after the header
         if (fp) {
             size_t written = fwrite(buf + header_len, 1, data_size, fp);
             if (written != data_size) {
@@ -165,7 +157,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Send an acknowledgement ("ACK") back to the client.
+        // Send an acknowledgement ("ACK") back to the client
         const char *ack = "ACK";
         if (sendto(sockfd, ack, strlen(ack), 0,
                    (struct sockaddr *)&client_addr, addr_len) == -1) {
@@ -174,12 +166,12 @@ int main(int argc, char *argv[]) {
         }
         printf("server: sent ACK for fragment %u\n", frag_no);
 
-        // If this is the last fragment, close the file and finish.
+        // If this is the last fragment, close the file and finish
         if (frag_no == total_frag) {
             printf("server: last fragment received. File transfer complete.\n");
             fclose(fp);
             fp = NULL;
-            done = 1;  // Exit loop; for multiple files, you might reset and wait for a new handshake.
+            done = 1; 
         }
     }
 
