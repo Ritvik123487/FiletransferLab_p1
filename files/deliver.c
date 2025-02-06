@@ -14,6 +14,9 @@
 #include <sys/socket.h>
 
 #define PORT "4090" // the port the listener is expecting to receive on
+#define DATA_SIZE 1000
+#define HEADER_SIZE 512
+#define MAXBUFLEN 100
 
 struct packet {
     unsigned int total_frag;
@@ -28,7 +31,6 @@ int main(int argc, char *argv[])
     int sockfd;
     struct addrinfo hints, *servinfo, *p;
     int rv;
-    #define MAXBUFLEN 100    // or however large you want the buffer
 
     // This structure holds the address of whoever we receive from
     struct sockaddr_storage their_addr;
@@ -92,12 +94,85 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+
     memmove(userInput, userInput + 4, strlen(userInput) - 3);
 
     if (access(userInput, F_OK) != 0) {
         perror("File check (access)");
         exit(1);
     }
+
+    // Open the file and compute total num of fragments 
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        perror("fopen");
+        exit(1);
+    }
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    unsigned int total_frag = file_size / DATA_SIZE;
+    if (file_size % DATA_SIZE != 0) total_frag++; 
+
+    // Construct packet
+    for (unsigned int frag_no = 1; frag_no <= total_frag; frag_no++) {
+         unsigned int data_size = DATA_SIZE;
+         if (frag_no == total_frag && (file_size % DATA_SIZE) != 0) {
+              data_size = file_size % DATA_SIZE;
+         }
+
+         // Read up to 1000 bytes from the file
+         char file_buffer[DATA_SIZE];
+         size_t bytes_read = fread(file_buffer, 1, data_size, fp);
+         if (bytes_read != data_size) {
+              perror("fread");
+              exit(1);
+         }
+
+         // Build the header string: "total_frag:frag_no:size:filename:"
+         // Note: The header ends with a colon. File data is appended immediately after.
+         char header[512];
+         int header_len = snprintf(header, sizeof(header), "%u:%u:%u:%s:",
+                                   total_frag, frag_no, data_size, filename);
+         if (header_len < 0) {
+              perror("snprintf");
+              exit(1);
+         }
+
+         // Allocate a buffer for the complete packet: header + file data.
+         int packet_len = header_len + data_size;
+         char *packet = malloc(packet_len);
+         if (!packet) {
+              perror("malloc");
+              exit(1);
+         }
+         memcpy(packet, header, header_len);
+         memcpy(packet + header_len, file_buffer, data_size);
+
+         // Send the packet to the server.
+         int sent = sendto(sockfd, packet, packet_len, 0,
+                           p->ai_addr, p->ai_addrlen);
+         if (sent != packet_len) {
+              perror("sendto packet");
+              free(packet);
+              exit(1);
+         }
+         free(packet);
+
+         // Wait for an ACK from the server before proceeding.
+         char ack[100];
+         if ((numbytes = recvfrom(sockfd, ack, sizeof(ack) - 1, 0, NULL, NULL)) == -1) {
+              perror("recvfrom ack");
+              exit(1);
+         }
+         ack[numbytes] = '\0';
+         if (strcmp(ack, "ACK") != 0) {
+              fprintf(stderr, "Did not receive proper ACK for fragment %u\n", frag_no);
+              // For simplicity we assume correct ACK reception; in a robust design you would retry.
+         }
+         printf("Sent fragment %u/%u, size %u bytes\n", frag_no, total_frag, data_size);
+    }
+
 
     //Send message to server.c
     const char *msgToServer = "ftp"; 
@@ -124,7 +199,6 @@ int main(int argc, char *argv[])
     } else {
         exit(1);
     }
-
 
     freeaddrinfo(servinfo); // free up the linked list
 
