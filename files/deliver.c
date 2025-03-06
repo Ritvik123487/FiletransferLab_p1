@@ -104,46 +104,45 @@ int main(int argc, char *argv[])
         perror("fopen");
         exit(1);
     }
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    unsigned int total_frag = file_size / DATA_SIZE;
-    if (file_size % DATA_SIZE != 0)
-        total_frag++; 
+    
+    unsigned int total_frag = 0;
+    while (1) {
+        char temp_buffer[DATA_SIZE];
+        size_t bytes = fread(temp_buffer, 1, DATA_SIZE, fp);
+        if (bytes > 0) total_frag++;
+        if (bytes < DATA_SIZE) break; // reached EOF
+    }
+
+    rewind(fp);
     
     // Send file fragments
     for (unsigned int frag_no = 1; frag_no <= total_frag; frag_no++) {
-         unsigned int data_size = DATA_SIZE;
-         if (frag_no == total_frag && (file_size % DATA_SIZE) != 0) {
-              data_size = file_size % DATA_SIZE;
-         }
          
          // Read file data
          char file_buffer[DATA_SIZE];
-         size_t bytes_read = fread(file_buffer, 1, data_size, fp);
-         if (bytes_read != data_size) {
-              perror("fread");
-              exit(1);
+         size_t bytes_read = fread(file_buffer, 1, DATA_SIZE, fp);
+         if (bytes_read == 0) {
+             break;
          }
          
          // Build header: "total_frag:frag_no:size:filename:"
          char header[HEADER_SIZE];
          int header_len = snprintf(header, sizeof(header), "%u:%u:%u:%s:",
-                                   total_frag, frag_no, data_size, filename);
+                                   total_frag, frag_no, DATA_SIZE, filename);
          if (header_len < 0) {
               perror("snprintf");
               exit(1);
          }
          
          // Allocate and build the complete packet: header + file data.
-         int packet_len = header_len + data_size;
+         int packet_len = header_len + bytes_read;
          char *packet = malloc(packet_len);
          if (!packet) {
               perror("malloc");
               exit(1);
          }
          memcpy(packet, header, header_len);
-         memcpy(packet + header_len, file_buffer, data_size);
+         memcpy(packet + header_len, file_buffer, bytes_read);
          
          // Send the packet
          int sent = sendto(sockfd, packet, packet_len, 0,
@@ -166,7 +165,7 @@ int main(int argc, char *argv[])
               fprintf(stderr, "Did not receive proper ACK for fragment %u\n", frag_no);
               // In a robust implementation, you might want to retry here.
          }
-         printf("Sent fragment %u/%u, size %u bytes\n", frag_no, total_frag, data_size);
+         printf("Sent fragment %u/%u, size %zu bytes\n", frag_no, total_frag, bytes_read);
     }
     
     fclose(fp);
