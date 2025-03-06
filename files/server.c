@@ -8,11 +8,15 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <time.h>
 
 #define MAXBUFLEN 2000    // Must be large enough to hold header + up to 1000 bytes of file data
 #define HEADER_SIZE 512   // Maximum header size (sufficient for "total_frag:frag_no:size:filename:")
 
 int main(int argc, char *argv[]) {
+    clock_t start, end;
+    double efef;
+    start = clock();
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <UDP listen port>\n", argv[0]);
         exit(1);
@@ -87,6 +91,9 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
         printf("server: handshake complete, file transfer will begin...\n");
+        end = clock();
+        efef  = ((double) (end-start))/CLOCKS_PER_SEC;
+        printf("Balls: %f", efef);
     } else {
         fprintf(stderr, "server: unexpected initial message: %s\n", buf);
         exit(1);
@@ -140,7 +147,9 @@ int main(int argc, char *argv[]) {
 
         // If this is the first fragment, open the file for writing
         if (frag_no == 1) {
-            fp = fopen(filename, "wb");
+            char filename1[256] = "./saved/";
+            strcat(filename1, filename);
+            fp = fopen(filename1, "wb");
             if (fp == NULL) {
                 perror("server: fopen");
                 exit(1);
@@ -174,7 +183,7 @@ int main(int argc, char *argv[]) {
             done = 1; 
         }
     }
-
+    printf("RTT: %f", efef);
     close(sockfd);
     return 0;
 }
