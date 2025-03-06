@@ -15,12 +15,16 @@
 
 int main(int argc, char *argv[]) {
     clock_t start, end;
-    double efef;
+    double measuredRTT;
     start = clock();
+    
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <UDP listen port>\n", argv[0]);
         exit(1);
     }
+
+    // Initialize random number generator for packet drop simulation
+    srand(time(NULL));
 
     int sockfd;
     struct addrinfo hints, *servinfo, *p;
@@ -92,8 +96,8 @@ int main(int argc, char *argv[]) {
         }
         printf("server: handshake complete, file transfer will begin...\n");
         end = clock();
-        efef  = ((double) (end-start))/CLOCKS_PER_SEC;
-        printf("Balls: %f", efef);
+        measuredRTT = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("Initial handshake RTT: %f seconds\n", measuredRTT);
     } else {
         fprintf(stderr, "server: unexpected initial message: %s\n", buf);
         exit(1);
@@ -109,7 +113,7 @@ int main(int argc, char *argv[]) {
             perror("server: recvfrom");
             exit(1);
         }
-        // Extract header using four colon format
+        // Extract header using four-colon format
         int colon_count = 0, i;
         for (i = 0; i < numbytes; i++) {
             if (buf[i] == ':') {
@@ -145,19 +149,27 @@ int main(int argc, char *argv[]) {
         printf("server: received fragment %u of %u, data size: %u, file: %s\n",
                frag_no, total_frag, data_size, filename);
 
+        // Simulate packet drop (drop 1% of packets)
+        double r = (double)rand() / RAND_MAX;
+        if (r < 0.01) {
+            printf("server: simulating drop of fragment %u\n", frag_no);
+            // Do not process or ACK this packet; let the client retransmit.
+            continue;
+        }
+
         // If this is the first fragment, open the file for writing
         if (frag_no == 1) {
-            char filename1[256] = "./saved/";
-            strcat(filename1, filename);
-            fp = fopen(filename1, "wb");
+            char filepath[512] = "./saved/";
+            strcat(filepath, filename);
+            fp = fopen(filepath, "wb");
             if (fp == NULL) {
                 perror("server: fopen");
                 exit(1);
             }
-            printf("server: created file \"%s\" for writing\n", filename);
+            printf("server: created file \"%s\" for writing\n", filepath);
         }
 
-        // The file data starts immediately after the header
+        // Write the file data (note: binary data, so use data_size from header)
         if (fp) {
             size_t written = fwrite(buf + header_len, 1, data_size, fp);
             if (written != data_size) {
@@ -183,7 +195,6 @@ int main(int argc, char *argv[]) {
             done = 1; 
         }
     }
-    printf("RTT: %f", efef);
     close(sockfd);
     return 0;
 }
