@@ -7,11 +7,12 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
-#define PORT "4090"     // Port on which the server is listening
 #define DATA_SIZE 1000  // Maximum file fragment size
 #define HEADER_SIZE 512 // Maximum header size
 #define MAXBUFLEN 100   // Buffer size for incoming messages
+#define TIMEOUT_SEC 2   // Timeout in seconds for ACK reception
 
 int main(int argc, char *argv[])
 {
@@ -27,7 +28,7 @@ int main(int argc, char *argv[])
     char buf[MAXBUFLEN];
 
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;    // AF_INET or AF_INET6
+    hints.ai_family = AF_UNSPEC;    // IPv4 or IPv6
     hints.ai_socktype = SOCK_DGRAM; // UDP
 
     if ((rv = getaddrinfo(argv[1], argv[2], &hints, &servinfo)) != 0) {
@@ -46,6 +47,15 @@ int main(int argc, char *argv[])
     }
     if (p == NULL) {
         fprintf(stderr, "Failed to create socket\n");
+        exit(1);
+    }
+    
+    // Set receive timeout for ACKs
+    struct timeval tv;
+    tv.tv_sec = TIMEOUT_SEC;
+    tv.tv_usec = 0;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("setsockopt");
         exit(1);
     }
     
@@ -115,9 +125,8 @@ int main(int argc, char *argv[])
 
     rewind(fp);
     
-    // Send file fragments
+    // Send file fragments with retransmission on timeout
     for (unsigned int frag_no = 1; frag_no <= total_frag; frag_no++) {
-         
          // Read file data
          char file_buffer[DATA_SIZE];
          size_t bytes_read = fread(file_buffer, 1, DATA_SIZE, fp);
@@ -126,9 +135,10 @@ int main(int argc, char *argv[])
          }
          
          // Build header: "total_frag:frag_no:size:filename:"
+         // Use actual bytes_read instead of DATA_SIZE in the header.
          char header[HEADER_SIZE];
-         int header_len = snprintf(header, sizeof(header), "%u:%u:%u:%s:",
-                                   total_frag, frag_no, DATA_SIZE, filename);
+         int header_len = snprintf(header, sizeof(header), "%u:%u:%zu:%s:",
+                                   total_frag, frag_no, bytes_read, filename);
          if (header_len < 0) {
               perror("snprintf");
               exit(1);
@@ -144,27 +154,34 @@ int main(int argc, char *argv[])
          memcpy(packet, header, header_len);
          memcpy(packet + header_len, file_buffer, bytes_read);
          
-         // Send the packet
-         int sent = sendto(sockfd, packet, packet_len, 0,
-                           p->ai_addr, p->ai_addrlen);
-         if (sent != packet_len) {
-              perror("sendto (packet)");
-              free(packet);
-              exit(1);
+         int ack_received = 0;
+         // Retransmission loop: send packet until proper ACK is received
+         while (!ack_received) {
+             // Send the packet
+             int sent = sendto(sockfd, packet, packet_len, 0,
+                               p->ai_addr, p->ai_addrlen);
+             if (sent != packet_len) {
+                  perror("sendto (packet)");
+                  free(packet);
+                  exit(1);
+             }
+             
+             // Wait for ACK from the server
+             numbytes = recvfrom(sockfd, buf, sizeof(buf) - 1, 0, NULL, NULL);
+             if (numbytes < 0) {
+                 // Timeout occurred, retransmit
+                 printf("Timeout occurred for fragment %u, retransmitting...\n", frag_no);
+                 continue;
+             }
+             buf[numbytes] = '\0';
+             if (strcmp(buf, "ACK") != 0) {
+                 fprintf(stderr, "Did not receive proper ACK for fragment %u, retransmitting...\n", frag_no);
+                 continue;
+             }
+             // ACK received; exit the retransmission loop.
+             ack_received = 1;
          }
          free(packet);
-         
-         // Wait for ACK from the server
-         char ack[100];
-         if ((numbytes = recvfrom(sockfd, ack, sizeof(ack) - 1, 0, NULL, NULL)) == -1) {
-              perror("recvfrom (ACK)");
-              exit(1);
-         }
-         ack[numbytes] = '\0';
-         if (strcmp(ack, "ACK") != 0) {
-              fprintf(stderr, "Did not receive proper ACK for fragment %u\n", frag_no);
-              // In a robust implementation, you might want to retry here.
-         }
          printf("Sent fragment %u/%u, size %zu bytes\n", frag_no, total_frag, bytes_read);
     }
     
