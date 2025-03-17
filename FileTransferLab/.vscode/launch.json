@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "lldb",
+      "request": "launch",
+      "args": [],
+      "cwd": "/Users/ryan/Desktop/Uoft/ECE361/FiletransferLab_p1/files",
+      "program": "/Users/ryan/Desktop/Uoft/ECE361/FiletransferLab_p1/files/build/Debug/outDebug"
+    }
+  ]
+}
