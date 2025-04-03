@@ -1,10 +1,12 @@
 /*
- * server.c - Text Conferencing Server Program
+ * server.c - Text Conferencing Server Program with Multiple Sessions
+ *            and Inactivity Timer
  *
  * Usage: ./server <port>
  *
  * The server listens on <port>, accepts multiple client connections,
- * and routes text messages for conferencing.
+ * routes text messages for conferencing, and disconnects clients that
+ * have been inactive for a long time.
  *
  * IMPORTANT:
  *  - This code is a skeleton to demonstrate the overall approach.
@@ -22,12 +24,14 @@
  #include <sys/socket.h>
  #include <sys/types.h>
  #include <netinet/in.h>
+ #include <time.h>   // for time functions
  
  // --------------------- DEFINITIONS ---------------------
  #define MAX_CLIENTS  100   // Max number of concurrently connected clients
  #define MAX_SESSIONS 100   // Max number of conference sessions
  #define MAX_NAME     50
  #define MAX_DATA     1024
+ #define INACTIVITY_THRESHOLD 60  // Inactivity threshold in seconds
  
  // Packet type definitions (must match client)
  #define LOGIN       1
@@ -45,20 +49,26 @@
  #define QU_ACK      13
  
  // --------------------- DATA STRUCTURES ---------------------
+ 
+ // Updated message structure with a session field.
  struct message {
      unsigned int type;
      unsigned int size;
      unsigned char source[MAX_NAME];
+     unsigned char session[MAX_NAME];  // holds session id for this message
      unsigned char data[MAX_DATA];
  };
  
- // Information about a single client
+ // Information about a single client.
+ // Updated to support multiple sessions and track last activity time.
  typedef struct {
      int  sockfd;                      // Socket descriptor
      char clientID[MAX_NAME];          // Unique client name (ID)
-     char sessionID[MAX_NAME];         // Session that the client is currently in (Section 1 = only one)
+     char sessions[MAX_SESSIONS][MAX_NAME]; // List of sessions this client has joined
+     int  session_count;               // Number of sessions the client is in
      struct sockaddr_in clientAddr;    // Client address
      int  active;                      // 1 if logged in, 0 otherwise
+     time_t last_active;               // Timestamp of last activity
  } client_t;
  
  // Information about a single conference session
@@ -70,11 +80,10 @@
  
  // --------------------- GLOBALS ---------------------
  static client_t   clients[MAX_CLIENTS];     // Connected clients
- static session_t  sessions[MAX_SESSIONS];   // Active sessions
- static int        num_sessions = 0;         // Number of currently active sessions
+ static session_t  sessions[MAX_SESSIONS];     // Active sessions
+ static int        num_sessions = 0;           // Number of currently active sessions
  
  // A simple, hard-coded user database
- // In real code, you might store these in a file or pass them in differently
  typedef struct {
      char username[MAX_NAME];
      char password[MAX_NAME];
@@ -184,11 +193,9 @@
      if (num_sessions >= MAX_SESSIONS) {
          return -1;
      }
-     // Check if it already exists
      if (find_session(sessionID) != -1) {
          return -1;  // already exists
      }
-     // Create new session
      strncpy(sessions[num_sessions].sessionID, sessionID, MAX_NAME - 1);
      sessions[num_sessions].num_members = 0;
      num_sessions++;
@@ -204,13 +211,11 @@
          return -1; // session not found
      }
      session_t *sess = &sessions[sidx];
-     // Check if already in session
      for (int i = 0; i < sess->num_members; i++) {
          if (strcmp(sess->members[i], clientID) == 0) {
              return 0; // already a member, do nothing
          }
      }
-     // Add to session
      if (sess->num_members < MAX_CLIENTS) {
          strncpy(sess->members[sess->num_members], clientID, MAX_NAME - 1);
          sess->num_members++;
@@ -220,8 +225,7 @@
  }
  
  /**
-  * Remove a client from its current session (if any).
-  * For Section 1, each client is in at most one session at a time.
+  * Remove a client from a session.
   */
  void remove_client_from_session(const char *clientID, const char *sessionID) {
      int sidx = find_session(sessionID);
@@ -237,15 +241,12 @@
          }
      }
      if (found_index != -1) {
-         // Shift everyone down
          for (int i = found_index; i < sess->num_members - 1; i++) {
              strcpy(sess->members[i], sess->members[i + 1]);
          }
          sess->num_members--;
      }
-     // If session is now empty, delete it
      if (sess->num_members == 0) {
-         // Shift sessions array
          for (int i = sidx; i < num_sessions - 1; i++) {
              sessions[i] = sessions[i + 1];
          }
@@ -262,7 +263,6 @@
          return;
      }
      session_t *sess = &sessions[sidx];
-     // For each member, find their sockfd and send
      for (int i = 0; i < sess->num_members; i++) {
          int cidx = find_client_by_id(sess->members[i]);
          if (cidx >= 0) {
@@ -275,8 +275,6 @@
   * Build a list of all connected clients and sessions for QU_ACK.
   */
  void build_list(char *outbuf, int outbuf_size) {
-     // Example format:
-     // "Users:\n jill\n jack\n\nSessions:\n lab_help(2 members)\n"
      char tmp[1024];
      memset(tmp, 0, sizeof(tmp));
  
@@ -300,6 +298,31 @@
      strncpy(outbuf, tmp, outbuf_size - 1);
  }
  
+ // --------------------- INACTIVITY MONITOR THREAD ---------------------
+ 
+ void *inactivity_monitor(void *arg) {
+     while (1) {
+         sleep(5);  // Check every 5 seconds
+         pthread_mutex_lock(&mutex);
+         time_t now = time(NULL);
+         for (int i = 0; i < MAX_CLIENTS; i++) {
+             if (clients[i].active) {
+                 if (difftime(now, clients[i].last_active) > INACTIVITY_THRESHOLD) {
+                     printf("Disconnecting client '%s' due to inactivity.\n", clients[i].clientID);
+                     for (int j = 0; j < clients[i].session_count; j++) {
+                         remove_client_from_session(clients[i].clientID, clients[i].sessions[j]);
+                     }
+                     clients[i].session_count = 0;
+                     close(clients[i].sockfd);
+                     clients[i].active = 0;
+                 }
+             }
+         }
+         pthread_mutex_unlock(&mutex);
+     }
+     return NULL;
+ }
+ 
  // --------------------- PER-CLIENT THREAD ---------------------
  
  void *client_thread(void *arg) {
@@ -312,21 +335,18 @@
      struct message msg;
  
      while (1) {
-         // Receive message
          if (recv_message(sockfd, &msg) < 0) {
-             // Client disconnected
              break;
          }
- 
          pthread_mutex_lock(&mutex);
+         // Update last activity time upon receiving any message.
+         clients[my_index].last_active = time(NULL);
  
          if (msg.type == EXIT) {
-             // Client wants to log out
-             // Remove from session if any
-             if (clients[my_index].sessionID[0] != '\0') {
-                 remove_client_from_session(clientID, clients[my_index].sessionID);
+             for (int i = 0; i < clients[my_index].session_count; i++) {
+                 remove_client_from_session(clientID, clients[my_index].sessions[i]);
              }
-             // Mark client inactive
+             clients[my_index].session_count = 0;
              clients[my_index].active = 0;
              close(sockfd);
              pthread_mutex_unlock(&mutex);
@@ -334,31 +354,36 @@
              return NULL;
          }
          else if (msg.type == JOIN) {
-             // Join a conference session
-             // Section 1: only one session at a time
-             if (clients[my_index].sessionID[0] != '\0') {
-                 // Already in a session
+             char sessionID[MAX_NAME];
+             strncpy(sessionID, (char*)msg.data, MAX_NAME - 1);
+             int sidx = find_session(sessionID);
+             if (sidx < 0) {
                  struct message nak;
                  memset(&nak, 0, sizeof(nak));
                  nak.type = JN_NAK;
-                 strcpy((char*)nak.data, "Already in a session");
+                 snprintf((char*)nak.data, MAX_DATA, "%s: session not found", sessionID);
                  send_message(sockfd, &nak);
              } else {
-                 char sessionID[MAX_NAME];
-                 strncpy(sessionID, (char*)msg.data, MAX_NAME - 1);
-                 int sidx = find_session(sessionID);
-                 if (sidx < 0) {
-                     // Session does not exist
-                     struct message nak;
-                     memset(&nak, 0, sizeof(nak));
-                     nak.type = JN_NAK;
-                     snprintf((char*)nak.data, MAX_DATA, "%s: session not found", sessionID);
-                     send_message(sockfd, &nak);
+                 int alreadyIn = 0;
+                 for (int i = 0; i < clients[my_index].session_count; i++) {
+                     if (strcmp(clients[my_index].sessions[i], sessionID) == 0) {
+                         alreadyIn = 1;
+                         break;
+                     }
+                 }
+                 if (alreadyIn) {
+                     struct message ack;
+                     memset(&ack, 0, sizeof(ack));
+                     ack.type = JN_ACK;
+                     strncpy((char*)ack.data, sessionID, MAX_DATA - 1);
+                     send_message(sockfd, &ack);
                  } else {
-                     // Add client to session
                      if (add_client_to_session(clientID, sessionID) == 0) {
-                         strcpy(clients[my_index].sessionID, sessionID);
-                         // Send JN_ACK
+                         if (clients[my_index].session_count < MAX_SESSIONS) {
+                             strncpy(clients[my_index].sessions[clients[my_index].session_count],
+                                     sessionID, MAX_NAME - 1);
+                             clients[my_index].session_count++;
+                         }
                          struct message ack;
                          memset(&ack, 0, sizeof(ack));
                          ack.type = JN_ACK;
@@ -366,7 +391,6 @@
                          send_message(sockfd, &ack);
                          printf("Client '%s' joined session '%s'.\n", clientID, sessionID);
                      } else {
-                         // Could not add to session
                          struct message nak;
                          memset(&nak, 0, sizeof(nak));
                          nak.type = JN_NAK;
@@ -377,55 +401,54 @@
              }
          }
          else if (msg.type == LEAVE_SESS) {
-             // Leave session
-             if (clients[my_index].sessionID[0] != '\0') {
-                 remove_client_from_session(clientID, clients[my_index].sessionID);
-                 clients[my_index].sessionID[0] = '\0';
+             char sessionID[MAX_NAME];
+             strncpy(sessionID, (char*)msg.session, MAX_NAME - 1);
+             int found = -1;
+             for (int i = 0; i < clients[my_index].session_count; i++) {
+                 if (strcmp(clients[my_index].sessions[i], sessionID) == 0) {
+                     found = i;
+                     break;
+                 }
+             }
+             if (found != -1) {
+                 remove_client_from_session(clientID, sessionID);
+                 for (int i = found; i < clients[my_index].session_count - 1; i++) {
+                     strcpy(clients[my_index].sessions[i], clients[my_index].sessions[i+1]);
+                 }
+                 clients[my_index].session_count--;
+                 printf("Client '%s' left session '%s'.\n", clientID, sessionID);
              }
          }
          else if (msg.type == NEW_SESS) {
-             // Create a new session
-             if (clients[my_index].sessionID[0] != '\0') {
-                 // Already in a session => cannot create a new one in Section 1
+             char newSessionID[MAX_NAME];
+             strncpy(newSessionID, (char*)msg.data, MAX_NAME - 1);
+             int sidx = create_session(newSessionID);
+             if (sidx < 0) {
                  struct message nak;
                  memset(&nak, 0, sizeof(nak));
                  nak.type = JN_NAK;
-                 strcpy((char*)nak.data, "Already in a session, cannot create another.");
+                 snprintf((char*)nak.data, MAX_DATA, "Failed to create session %s", newSessionID);
                  send_message(sockfd, &nak);
              } else {
-                 char newSessionID[MAX_NAME];
-                 strncpy(newSessionID, (char*)msg.data, MAX_NAME - 1);
-                 int sidx = create_session(newSessionID);
-                 if (sidx < 0) {
-                     // Could not create
-                     struct message nak;
-                     memset(&nak, 0, sizeof(nak));
-                     nak.type = JN_NAK;
-                     snprintf((char*)nak.data, MAX_DATA, "Failed to create session %s", newSessionID);
-                     send_message(sockfd, &nak);
-                 } else {
-                     // Add client to newly created session
-                     add_client_to_session(clientID, newSessionID);
-                     strcpy(clients[my_index].sessionID, newSessionID);
-                     struct message ack;
-                     memset(&ack, 0, sizeof(ack));
-                     ack.type = NS_ACK;
-                     strncpy((char*)ack.data, newSessionID, MAX_DATA - 1);
-                     send_message(sockfd, &ack);
-                     printf("Client '%s' created session '%s'.\n", clientID, newSessionID);
+                 add_client_to_session(clientID, newSessionID);
+                 if (clients[my_index].session_count < MAX_SESSIONS) {
+                     strncpy(clients[my_index].sessions[clients[my_index].session_count],
+                             newSessionID, MAX_NAME - 1);
+                     clients[my_index].session_count++;
                  }
+                 struct message ack;
+                 memset(&ack, 0, sizeof(ack));
+                 ack.type = NS_ACK;
+                 strncpy((char*)ack.data, newSessionID, MAX_DATA - 1);
+                 send_message(sockfd, &ack);
+                 printf("Client '%s' created session '%s'.\n", clientID, newSessionID);
              }
          }
          else if (msg.type == MESSAGE) {
-             // Broadcast to all members of the session
-             if (clients[my_index].sessionID[0] != '\0') {
-                 // fill in source in case client didn't
-                 strncpy((char*)msg.source, clientID, MAX_NAME - 1);
-                 broadcast_message(clients[my_index].sessionID, &msg);
-             }
+             strncpy((char*)msg.source, clientID, MAX_NAME - 1);
+             broadcast_message((char*)msg.session, &msg);
          }
          else if (msg.type == QUERY) {
-             // Build list of users and sessions
              char buf[1024];
              memset(buf, 0, sizeof(buf));
              build_list(buf, sizeof(buf));
@@ -437,21 +460,19 @@
              send_message(sockfd, &ack);
          }
          else {
-             // Unknown message
              fprintf(stderr, "Unknown message type %d from client %s\n",
                      msg.type, clientID);
          }
- 
          pthread_mutex_unlock(&mutex);
      }
  
-     // If we get here, the client likely disconnected abruptly
+     // Handle abrupt disconnection.
      pthread_mutex_lock(&mutex);
      if (clients[my_index].active) {
-         // Remove from session if any
-         if (clients[my_index].sessionID[0] != '\0') {
-             remove_client_from_session(clientID, clients[my_index].sessionID);
+         for (int i = 0; i < clients[my_index].session_count; i++) {
+             remove_client_from_session(clientID, clients[my_index].sessions[i]);
          }
+         clients[my_index].session_count = 0;
          clients[my_index].active = 0;
          close(sockfd);
          printf("Client '%s' disconnected.\n", clientID);
@@ -470,23 +491,18 @@
      }
      int port = atoi(argv[1]);
  
-     // Zero out the clients array
      memset(clients, 0, sizeof(clients));
-     // Zero out sessions
      memset(sessions, 0, sizeof(sessions));
  
-     // Create a TCP socket
      int server_sock = socket(AF_INET, SOCK_STREAM, 0);
      if (server_sock < 0) {
          perror("socket");
          exit(EXIT_FAILURE);
      }
  
-     // Allow address reuse
      int optval = 1;
      setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
  
-     // Bind to the specified port
      struct sockaddr_in serv_addr;
      memset(&serv_addr, 0, sizeof(serv_addr));
      serv_addr.sin_family = AF_INET;
@@ -499,7 +515,6 @@
          exit(EXIT_FAILURE);
      }
  
-     // Listen for connections
      if (listen(server_sock, 10) < 0) {
          perror("listen");
          close(server_sock);
@@ -508,8 +523,14 @@
  
      printf("Server listening on port %d...\n", port);
  
+     // Start the inactivity monitor thread.
+     pthread_t monitor_tid;
+     if (pthread_create(&monitor_tid, NULL, inactivity_monitor, NULL) != 0) {
+         perror("pthread_create for inactivity monitor");
+         exit(EXIT_FAILURE);
+     }
+ 
      while (1) {
-         // Accept new connection
          struct sockaddr_in client_addr;
          socklen_t addr_len = sizeof(client_addr);
          int client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len);
@@ -518,16 +539,13 @@
              continue;
          }
  
-         // First, we expect the client to send a LOGIN message
          struct message msg;
          if (recv_message(client_sock, &msg) < 0) {
-             // Connection dropped immediately
              close(client_sock);
              continue;
          }
  
          if (msg.type != LOGIN) {
-             // Protocol error: we expected a LOGIN
              close(client_sock);
              continue;
          }
@@ -539,9 +557,7 @@
  
          pthread_mutex_lock(&mutex);
  
-         // Check if this client ID is already logged in
          if (find_client_by_id(clientID) != -1) {
-             // Already logged in
              struct message nak;
              memset(&nak, 0, sizeof(nak));
              nak.type = LO_NAK;
@@ -552,9 +568,7 @@
              continue;
          }
  
-         // Authenticate
          if (!authenticate_user(clientID, password)) {
-             // Invalid credentials
              struct message nak;
              memset(&nak, 0, sizeof(nak));
              nak.type = LO_NAK;
@@ -565,10 +579,8 @@
              continue;
          }
  
-         // Find free slot
          int idx = find_free_client_slot();
          if (idx < 0) {
-             // No space
              struct message nak;
              memset(&nak, 0, sizeof(nak));
              nak.type = LO_NAK;
@@ -579,14 +591,13 @@
              continue;
          }
  
-         // Fill client info
          clients[idx].sockfd = client_sock;
          strncpy(clients[idx].clientID, clientID, MAX_NAME - 1);
          clients[idx].clientAddr = client_addr;
          clients[idx].active = 1;
-         clients[idx].sessionID[0] = '\0';  // Not in a session yet
+         clients[idx].session_count = 0;
+         clients[idx].last_active = time(NULL);  // Set initial activity time
  
-         // Send LO_ACK
          struct message ack;
          memset(&ack, 0, sizeof(ack));
          ack.type = LO_ACK;
@@ -595,13 +606,11 @@
  
          printf("Client '%s' logged in.\n", clientID);
  
-         // Create a thread to handle this client
          pthread_t tid;
          int *arg = malloc(sizeof(int));
          *arg = idx;
          if (pthread_create(&tid, NULL, client_thread, arg) != 0) {
              perror("pthread_create");
-             // If we fail to create a thread, forcibly close
              clients[idx].active = 0;
              close(client_sock);
          }
@@ -609,8 +618,6 @@
          pthread_mutex_unlock(&mutex);
      }
  
-     // Close server socket
      close(server_sock);
      return 0;
  }
- 
